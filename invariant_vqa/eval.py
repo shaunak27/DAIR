@@ -142,5 +142,4 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate VQA')
     parser.add_argument('--load_from',default = "./models/lambda_10_gamma_0.5/", type = str)
     args = parser.parse_args()
-    Path(args.trained_model_save_folder).mkdir(parents=True, exist_ok=True)
     main(args)
