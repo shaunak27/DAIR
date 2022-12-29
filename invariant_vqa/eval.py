@@ -15,14 +15,6 @@ import time
 import argparse
 from pathlib import Path
 
-print(config.model_type)
-
-def update_learning_rate(optimizer, iteration):
-    lr = args.initial_lr * 0.5**(float(iteration) / args.lr_halflife)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-
 total_iterations = 0
 
 log_softmax = nn.LogSoftmax(dim=1).cuda()  ### nn.LogSoftmax().cuda()
@@ -61,50 +53,16 @@ def run(args,net, loader, optimizer, tracker, train=False, prefix='', epoch=0, d
         a = Variable(a.cuda(), **var_params)
         q_len = Variable(q_len.cuda(), **var_params)
 
-        if train:
-            v_e = Variable(v_e.cuda(), **var_params)
-            q_e = Variable(q_e.cuda(), **var_params)
-            a_e = Variable(a_e.cuda(), **var_params)
-            q_len_e = Variable(q_len_e.cuda(), **var_params)            
+        with torch.no_grad():
             out = net(v, q, q_len)
             out2 = net(v_e, q_e, q_len_e)
-            nll = -log_softmax(out)
+            nll = -log_softmax(out)  ## taking softmax here
             nll2 = -log_softmax(out2)
+            loss = (nll * a / 10).sum(dim=1).mean()
+            acc = utils.batch_accuracy(out.data, a.data).cpu()
+            acc2 = utils.batch_accuracy(out2.data, a.data).cpu()   ### taking care of volatile=True for val
             _, out_index = out.max(dim=1, keepdim=True)
             _, out2_index = out2.max(dim=1, keepdim=True)
-            loss_1 = (nll * a / 10).sum(dim=1)     ### SO THIS COMPLETES CROSS ENTROPY : -p_true* log(p_pred) as  'a/10' does the role of being p_true  - ans has avlue 10 where its true
-            loss_2 = (nll2 * a_e / 10).sum(dim=1)
-            
-            loss = (nll * a / 10).sum(dim=1).mean()
-
-            if ('data_aug2' in config.model_type or 'data_aug3' in config.model_type) and config.edit_loader_type == 'get_edits':
-            
-                loss_1 += 1e-7
-                loss_2 += 1e-7
-                loss = args.gamma*loss_1.mean() + (1-args.gamma)*loss_2.mean() + args._lambda*(loss_1.pow(0.5) - loss_2.pow(0.5)).pow(2).mean()
-
-            acc = utils.batch_accuracy(out.data, a.data).cpu()
-            acc2 = utils.batch_accuracy(out2.data, a.data).cpu()
-            global total_iterations
-            update_learning_rate(optimizer, total_iterations)
-
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_iterations += 1
-
-        else:
-            with torch.no_grad():
-                out = net(v, q, q_len)
-                out2 = net(v_e, q_e, q_len_e)
-                nll = -log_softmax(out)  ## taking softmax here
-                nll2 = -log_softmax(out2)
-                loss = (nll * a / 10).sum(dim=1).mean()
-                acc = utils.batch_accuracy(out.data, a.data).cpu()
-                acc2 = utils.batch_accuracy(out2.data, a.data).cpu()   ### taking care of volatile=True for val
-                _, out_index = out.max(dim=1, keepdim=True)
-                _, out2_index = out2.max(dim=1, keepdim=True)
 
 
         pos2neg += (torch.tensor(is_edit_batch).view(-1,1)*((acc == 1.0)*(acc2 != 1.0))).sum().item()
@@ -157,11 +115,6 @@ def main(args):
         net = nn.DataParallel(model.Net(train_loader.dataset.num_tokens)).cuda()
         target_name = os.path.join(args.trained_model_save_folder)    # so this will store the models
         os.makedirs(target_name, exist_ok=True)
-        if os.path.exists(args.load_from):
-            net.load_state_dict(torch.load(args.load_from)["weights"])
-            print("Loaded model successfully !")
-        else:
-            print("Model initialized randomly !")
     elif 'finetuning_SAAA' in config.model_type:
         net = nn.DataParallel(model.Net(train_loader.dataset.num_tokens)).cuda()
         model_path = os.path.join(config.model_path_show_ask_attend_answer)
@@ -177,30 +130,17 @@ def main(args):
     config_as_dict = {k: v for k, v in vars(config).items() if not k.startswith('__')}
 
     for i in range(config.epochs):
-        _ = run(args, net, train_loader, optimizer, tracker, train=True, prefix='train', epoch=i, dataset=train_dataset)   ## prefix needed as ths is passed to tracker- which stroes then train_acc/loss
-        _ = run(args, net, val_loader, optimizer, tracker, train=False, prefix='val', epoch=i, dataset= val_dataset)    ## prefix needed as ths is passed to tracker- which stroes then val acc/loss
-
-        results = {
-            'tracker': tracker.to_dict(),   ## tracker saves acc/loss for all 50 epochs- since it appends the values ( lines 91..)
-            'config': config_as_dict,
-            'weights': net.state_dict(),
-            
-            'vocab': train_loader.dataset.vocab,
-        }
-        saving_target_name = 'epoch_{}.pth'.format(i)   ## you want to have all finetuned models- so save every model at everye epoch
-        torch.save(results, os.path.join(target_name, saving_target_name))   ## keys:  "name", "tracker", "config", "weights", "eval", "vocab"
+        file_name = args.load_from + 'epoch_' + str(i) + '.pth'
+        if os.path.exists(file_name):
+            net.load_state_dict(torch.load(file_name)["weights"])
+            _ = run(args, net, val_loader, optimizer, tracker, train=False, prefix='val', epoch=i, dataset= val_dataset)    ## prefix needed as ths is passed to tracker- which stroes then val acc/loss
 
     print('time_taken:', time.time() - start_time)
     #print(config.model_type)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train VQA')
-    parser.add_argument('--gamma',default = 0.5, type = float)
-    parser.add_argument('--_lambda',default = 1, type = float)
-    parser.add_argument('--load_from',default = "./models/lambda_10_gamma_0.5/epoch_4.pth", type = str)
-    parser.add_argument('--initial_lr',default = 1e-3, type = float)
-    parser.add_argument('--lr_halflife',default = 50000, type = float)
-    parser.add_argument('--trained_model_save_folder', default='./models/lambda_1_gamma_half', type = str)
+    parser = argparse.ArgumentParser(description='Evaluate VQA')
+    parser.add_argument('--load_from',default = "./models/lambda_10_gamma_0.5/", type = str)
     args = parser.parse_args()
     Path(args.trained_model_save_folder).mkdir(parents=True, exist_ok=True)
     main(args)

@@ -16,7 +16,7 @@ del1_path_val =  './data/IMAGES_counting_del1_edited_VQA_v2/val2014'
 
 # training config
 epochs = 50
-batch_size = 96   ## originally 128 for learning
+batch_size = 96*4   ## originally 128 for learning
 initial_lr = 1e-3 #1e-3  # default Adam lr
 lr_halflife = 50000  # in iterations
 data_workers = 8
